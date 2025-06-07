@@ -60,9 +60,13 @@ Our approach is grounded in the recognition that within chaotic fluid systems, *
 
 **Definition (Equilibrium Base Case)**: An equilibrium base case is a CFD configuration $(u, p, \phi)$ where:
 
-$$\frac{\partial}{\partial t}\|u - u_{eq}\| < \epsilon \quad \text{and} \quad \frac{\partial}{\partial p_i}\|u - u_{eq}\| < \delta$$
+$\frac{\partial}{\partial t}\|u - u_{eq}\|_{L^2(\Omega)} < \epsilon \quad \text{and} \quad \frac{\partial}{\partial p_i}\|u - u_{eq}\|_{L^2(\Omega)} < \delta$
 
-for velocity field $u$, pressure $p$, and parameter vector $\phi$, with stability thresholds $\epsilon, \delta$.
+**Parameter Specifications**:
+- $\|u - u_{eq}\|_{L^2(\Omega)}$: L2 norm over spatial domain Ω [m/s]
+- $\epsilon$: Temporal deviation tolerance [m/s] 
+- $\delta$: Parameter deviation bound (dimensionless)
+- $\Omega$: Computational domain with boundary conditions ∂Ω
 
 **Verification Principle**: Rather than verifying arbitrary CFD solutions, we:
 1. **Identify equilibrium configurations** within the solution space
@@ -106,16 +110,33 @@ EquilibriumConfig* detect_base_case(CFDSystem* system);
 
 #### 2. Probabilistic Symbolic Feedback Controller (`φ_controller.rs`)
 ```rust
+#[derive(Debug)]
 pub struct TrustController {
     pub trust_function: fn(f64, f64, f64) -> f64,  // f(x, t, φ)
     pub stability_metrics: Vec<StabilityMetric>,
     pub audit_trail: AuditLog,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum TrustLevel {
+    High,    // φ > 0.8
+    Medium,  // 0.4 < φ ≤ 0.8  
+    Low,     // φ ≤ 0.4
+}
+
 impl TrustController {
     pub fn evaluate_trust(&self, x: f64, t: f64) -> f64 {
         let phi = self.compute_trust_weighting(t);
         (self.trust_function)(x, t, phi)
+    }
+    
+    pub fn trust_grade(&self, x: f64, t: f64) -> TrustLevel {
+        let trust_value = self.evaluate_trust(x, t);
+        match trust_value {
+            v if v > 0.8 => TrustLevel::High,
+            v if v > 0.4 => TrustLevel::Medium,
+            _ => TrustLevel::Low,
+        }
     }
 }
 ```
@@ -137,12 +158,19 @@ TRUST → VALIDATE: [confidence_threshold_exceeded]
 
 The verification system operates through a trust-modulated feedback function:
 
-$$f(x, t, \phi) = g(x, t) \cdot \phi(t) \cdot \beta(\text{stability})$$
+$f(x, t, \phi) = g(x, t) \cdot \phi(t) \cdot \beta(\text{stability})$
 
 Where:
 - **$g(x, t)$**: Base solution at position $x$, time $t$
 - **$\phi(t) = e^{-\alpha \cdot \delta(t)}$**: Exponential trust decay based on deviation $\delta(t)$
-- **$\beta(\text{stability})$**: Stability-preserving adaptive correction factor
+- **$\beta(\text{stability}) = \frac{1}{1 + \log(1 + R(t))}$**: Stability correction factor where $R(t)$ is the residual norm at timestep $t$
+
+**Stability Function Implementation**:
+```c
+double compute_stability_factor(double residual_norm) {
+    return 1.0 / (1.0 + log(1.0 + residual_norm));
+}
+```
 
 **Trust Modulation Protocol**:
 ```
